@@ -67,14 +67,81 @@ this activity adds. Keep each part short. Update it when the plan changes.
 
 ### Problem analysis
 
-The four routines `bench.c` expects and what each one returns. Which
-registers you preserve and why.
+The activity requires implementing four assembly routines that can be called from C. The routines must produce correct results and follow the 32-bit x86 cdecl calling convention.
+
+`qsort_asm(int *arr, int n)` — Sorts an array of n integers in ascending order. It does not return a value.
+
+`bsearch_asm(int *arr, int n, int key)` — Searches for key in a sorted array and returns its index if found, or -1 if absent.
+
+`gcd_asm(int a, int b)` — Computes and returns the greatest common divisor (GCD) of two nonnegative integers. It also records the recursion depth in gcd_depth.
+
+`sum_range_asm(int lo, int hi)` — Computes and returns the sum of integers from lo to hi, inclusive. It must support nested calls without interfering with an earlier invocation.
+
+All routines must follow the cdecl calling convention. The callee must preserve the EBX, ESI, and EDI registers because they are callee-saved registers. It must also preserve EBP and leave stack cleanup to the caller. Return values are placed in EAX for routines that return an integer. These requirements are necessary for compatibility with C and are tested by the provided hostile caller.
+
+**Note**
+- qsort_asm returns void since the returned value is in one of the input itself, while the other three routines return integers. Also, the gcd_depth global is specifically required for reporting recursion depth; it is not the GCD result itself.
 
 ### Solution architecture
 
 A stack frame diagram for one recursive call of `qsort_asm`, showing where
 the arguments, the return address, saved `ebp`, and the saved registers
 sit. Why `sum_range_asm` is reentrant.
+
+`_qsort_asm`
+Purpose: C-facing function that starts QuickSort.
+
+Stack frame:
+[EBP + 12] = n       (number of elements)
+[EBP + 8]  = arr     (array pointer)
+[EBP + 4]  = return address
+[EBP]      = saved EBP
+
+
+`qsort_recursive`
+Purpose: Recursively sort the array sections.
+
+Arguments:
+[EBP + 8]  = arr
+[EBP + 12] = lo
+[EBP + 16] = hi
+
+Stack frame:
+[EBP + 16] = hi
+[EBP + 12] = lo
+[EBP + 8]  = arr
+[EBP + 4]  = return address
+[EBP]      = saved EBP
+
+Local variables:
+[EBP - 4] = p (pivot's final index)
+
+
+`partition`
+Purpose: Place the pivot in its correct position.
+
+Arguments:
+[EBP + 8]  = arr
+[EBP + 12] = lo
+[EBP + 16] = hi
+
+Stack frame:
+[EBP + 16] = hi
+[EBP + 12] = lo
+[EBP + 8]  = arr
+[EBP + 4]  = return address
+[EBP]      = saved EBP
+
+Local variables:
+[EBP - 4]  = pivot (arr[hi])
+[EBP - 8]  = i (boundary index)
+[EBP - 12] = j (loop index)
+
+
+
+
+
+
 
 ### Measurements
 
@@ -97,9 +164,9 @@ who owns it.
 
 | Week | Goal | Owner |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 |Problem Analysis and Ownership |Brent|
+| 2 |qsort & bsearch|Chua|
+| 3 |gcd & sum_range|JM|
 | 4 | Defense | |
 
 ## Subsystem Ownership
@@ -110,9 +177,9 @@ share one. The commit history must agree with this table.
 
 | Subsystem | Owner |
 |---|---|
-| Sorting (`qsort_asm` and its partition) | |
-| Searching (`bsearch_asm`, `gcd_asm`) | |
-| Convention and measurement (`sum_range_asm`, the benchmarks) | |
+| Sorting (`qsort_asm` and its partition) |Brent |
+| Searching (`bsearch_asm`, `gcd_asm`) |Chua|
+| Convention and measurement (`sum_range_asm`, the benchmarks) |JM|
 
 ## Quirks and Issues
 
