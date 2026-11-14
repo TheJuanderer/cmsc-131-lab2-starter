@@ -166,16 +166,56 @@ bsearch_recursive:
 
 
 .bsearch_recursive_absent_key:
-
+        mov     eax, -1
+        jmp     .bsearch_recursive_done
 
 
 .bsearch_recursive_mid:
+        mov     eax, [EBP - 4]
+        jmp     .bsearch_recursive_done
 
 
 
 ; if arr[mid] < key
 .bsearch_recursive_less_than_key:
+        ; push (arr, mid + 1, hi, key) from right to left
+        mov     eax, [ebp + 20]
+        push    eax
+
+        mov     eax, [ebp + 16]
+        push    eax
+
+        mov     eax, [ebp - 4]
+        add     eax, 1
+        push    eax
+
+        mov     eax, [ebp + 8]
+        push    eax
+
+        call    bsearch_recursive
+        add    esp, 16
+
+        jmp     .bsearch_recursive_done
+
 
 
 
 .else:
+        ; push (arr, lo, mid - 1, key) from right to left
+        mov     eax, [ebp + 20]
+        push    eax
+
+        mov     eax, [ebp - 4]
+        sub     eax, 1
+        push    eax
+
+        mov     eax, [ebp + 12]
+        push    eax
+
+        mov     eax, [ebp + 8]
+        push    eax
+
+        call    bsearch_recursive
+        add    esp, 16
+
+        jmp     .bsearch_recursive_done
