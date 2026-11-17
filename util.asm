@@ -76,8 +76,7 @@ segment .text
         extern  _bench_callback
 _gcd_asm:
         enter   0,0
-        pusha
-
+        
         ;
         ; TODO: gcd. Count the calls. Reset gcd_depth at entry, then keep
         ; the deepest level reached, with the first call as level 1. Carry
@@ -86,10 +85,64 @@ _gcd_asm:
         ; returns, so a counter that returns to zero on exit prints 0.
         ;
 
-        popa
-        mov     eax, 0
+        mov     eax, [ebp + 12]
+        push    eax
+
+        mov     eax, [ebp+8]
+        push    eax
+
+        call    .gcd_asm_recursive
+        add     esp, 8
+        
         leave
         ret
+
+
+.gcd_asm_recursive:
+        push    ebp
+        mov     ebp, esp
+
+        mov     eax, [ebp+12]
+        cmp     eax, 0
+        je      .return
+
+        ; a % b
+        mov     eax, [ebp+8]
+        cdq
+        mov     ecx, [ebp+12]
+        idiv    ecx
+
+        ; get the a % b and push it
+        mov     eax, edx
+        push    eax
+        
+        ; get the b and push it
+        mov     eax, [ebp+12]
+        push    eax
+
+        call    .gcd_asm_recursive
+        add     esp, 8
+
+        jmp    .done
+
+
+.return:
+        mov     eax, [ebp+8]
+        jmp     .done
+
+
+.done:
+        mov     esp, ebp
+        pop     ebp
+        ret
+
+
+
+
+
+
+
+
 
         global  _sum_range_asm
 _sum_range_asm:
