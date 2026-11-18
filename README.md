@@ -137,11 +137,71 @@ Local variables:
 [EBP - 8]  = i (boundary index)
 [EBP - 12] = j (loop index)
 
+#### Stack frame of one recursive `qsort_recursive` call
 
+The stack grows toward lower addresses. This is the view from inside a call
+`qsort_recursive(arr, lo, p - 1)` made by its parent, once its prologue
+(`push ebp; mov ebp, esp; sub esp, 4`) has run:
 
+```text
+higher addresses
+        |  ...parent's frame (its own p, saved ebp, args)...  |
+        +-----------------------------------------------------+
+EBP+16  |  hi   = p - 1          pushed first by the parent   |  arguments,
+EBP+12  |  lo                                                 |  pushed right
+EBP+8   |  arr  (base address)   pushed last                  |  to left
+        +-----------------------------------------------------+
+EBP+4   |  return address        pushed by `call`             |
+EBP+0   |  saved EBP (parent's frame pointer)  <-- EBP        |  prologue
+EBP-4   |  p    (partition result, local)      <-- ESP        |  sub esp, 4
+        +-----------------------------------------------------+
+        |  args for the next call: hi, lo, arr, then its      |
+        |  return address, saved EBP, p ... (child frame)     |
+lower addresses
+```
 
+Saved registers: `qsort_recursive` saves none because it keeps nothing in
+`ebx`, `esi` or `edi`. Its only values that must survive a call (`arr`, `lo`,
+`hi`, `p`) live at fixed `ebp` offsets in its own frame, so a child call
+cannot clobber them. `partition` saves and restores registers around each
+swap with `pusha`/`popa`. The C-facing `qsort_asm` pushes `ebx` just below
+its saved `ebp`, at `[ebp-4]`, and pops it before `leave`. After every call,
+the caller removes the arguments with `add esp, 12`.
 
+#### Registers we preserve, and why
 
+| Register | Status under cdecl | What our code does |
+|---|---|---|
+| `eax`, `ecx`, `edx` | caller-saved (scratch) | Used freely. `eax` carries every return value. Nothing that must survive a `call` is kept in them. Values are reloaded from the frame instead. |
+| `ebx`, `esi`, `edi` | callee-saved | `qsort_asm` saves `ebx`. `partition` uses `ebx`/`esi` only between `pusha` and `popa`. `bsearch_recursive` pushes and pops `ebx` around the division. `gcd_asm` and `sum_range_asm` never touch them. |
+| `ebp` | callee-saved | Every routine opens with `enter 0,0` or `push ebp; mov ebp, esp` and closes with `leave` or `mov esp, ebp; pop ebp`. |
+| `esp` | must be balanced | Each `call` is followed by `add esp, 4*nargs`, and locals are released by `mov esp, ebp` or `leave`. |
+
+The reason is that C (and our own recursion) keeps live values in the
+callee-saved registers across calls. A recursive routine is its own caller,
+so a clobbered register would corrupt the outer invocation of the same
+routine. `./bench --hostile` loads sentinels into `ebx`/`esi`/`edi`, checks
+that they and `esp` come back unchanged, and passes for all four routines.
+
+#### Why `sum_range_asm` is reentrant
+
+`sum_range_asm` and its helper `sum_range_recursive` keep **no mutable state
+outside their own stack frames**. There is no `.data` or `.bss` variable in
+the routine. `lo` and `hi` sit in each call's argument slots. The partial
+sum is returned in `eax` and added to `[ebp+8]` (this frame's own `lo`) after
+the child returns. When `bench_callback` starts a nested
+`sum_range_asm(1, 100)`, the nested call builds its frames *below* the outer
+call's frame and returns before the outer one continues. The outer call then
+reads `lo`/`hi` from its own untouched slots.
+
+A non-reentrant version would keep an accumulator in `.bss`
+(`acc resd 1`): zero it on entry, call the callback, then add `lo..hi` into
+`acc`. The nested call made from inside the callback would also zero `acc` and
+leave 5050 in it. The outer call would resume and add 1..1000 on top of
+5050, giving 505550, not 500500. A global loop counter would fail the same
+way. `gcd_depth` is the only global in `util.asm`. It belongs to `gcd_asm` and
+is diagnostic. Because of it, `gcd_asm` itself is *not* reentrant (see
+Quirks).
 
 ### Measurements
 
@@ -149,13 +209,45 @@ The ratio `bench` reports on `random1000.txt`, `sorted1000.txt`,
 `reverse1000.txt`, `duplicates.txt`, and `identical.txt`. Your worst case
 and its cause. One improvement and its estimated effect.
 
-| File | Ratio |
-|---|---|
-| `random1000.txt` | |
-| `sorted1000.txt` | |
-| `reverse1000.txt` | |
-| `duplicates.txt` | |
-| `identical.txt` | |
+Measured on Linux (WSL2, gcc -m32). Each figure is the range over three
+runs of `./bench --sort <file>`. bench already averages 200 sorts per run.
+
+| File | `qsort_asm` (ms) | C `qsort` (ms) | Ratio |
+|---|---|---|---|
+| `random1000.txt` | 0.089 – 0.093 | 0.138 – 0.142 | 0.65x |
+| `sorted1000.txt` | 4.21 – 4.33 | 0.062 – 0.071 | 60 – 70x |
+| `reverse1000.txt` | 2.38 – 2.43 | 0.070 – 0.074 | 32 – 34x |
+| `duplicates.txt` | 0.275 – 0.288 | 0.038 – 0.042 | 6.6 – 7.5x |
+| `identical.txt` | 0.043 | 0.004 – 0.005 | 9 – 10.5x |
+
+**Random input.** We beat C's `qsort`. As the manual warns, this says more
+about C than about us: C calls `cmp_int` through a function pointer for
+every comparison, while we compare in a register.
+
+**Worst case: `sorted1000.txt`.** Lomuto with the last element as pivot
+picks the *maximum* of every subarray on sorted input. Every element is
+`<= pivot`, so each partition leaves `n-1` elements on the left and none on
+the right. The recursion is `n` levels deep instead of about `log2 n`, and
+the total work is about n²/2 = 500,000 comparisons, against about
+n log2 n ≈ 10,000 on random input. Sorted input is worse than reversed input
+because every comparison is followed by a swap (`arr[i]` with itself), and
+our swap runs `pusha`/`popa` (16 extra stack operations) each time. On
+reversed input the pivot is the minimum, so almost no swaps happen. The
+recursion is still quadratic, which is why `reverse1000.txt` sits at about
+half the cost. `identical.txt` and `duplicates.txt` hit the same quadratic
+pattern within each run of equal keys, because `<=` sends every equal key to
+one side.
+
+**One improvement: median-of-three pivot.** Before partitioning, order
+`arr[lo]`, `arr[mid]`, `arr[hi]` and swap the median into `arr[hi]`. Lomuto
+then runs unchanged. On sorted and reversed input the median is the true
+middle, so the recursion becomes balanced, about n log n. We estimate
+`sorted1000.txt` would fall from about 4.3 ms to about 0.1 ms, roughly
+40×–50× faster, which takes its ratio from about 65x to around 1x. Separately,
+replacing the `pusha`/`popa` around each swap with two scratch registers
+(`eax`/`edx`, as in the manual's swap snippet) should cut the per-swap cost.
+We estimate 20–30% off every file. Median-of-three does not help
+`identical.txt`. That needs three-way (Dutch-flag) partitioning.
 
 ### Timeline
 
@@ -190,8 +282,36 @@ did about it.
 
 ### Known issues
 
-- 
+- **Quadratic time and linear recursion depth on sorted input.** `qsort_asm`
+  takes about 65x as long as C on `sorted1000.txt`. Cause: Lomuto with the last
+  element as pivot always picks the extreme value on sorted or reversed input
+  (see Measurements). Each level also costs a 24-byte frame, so a sorted
+  array of a few hundred thousand elements could overflow a 1 MB Windows
+  stack. What we did: documented it and measured it. Median-of-three is the
+  planned fix. The manual does not require it.
+- **`sum_range_asm` recursion depth is `hi - lo + 1`.** Each level uses a
+  16-byte frame. `bench` only asks for 1..1000 and 1..100. A range that still
+  fits in 32 bits, such as -46340..46340, needs about 93,000 frames (about
+  1.5 MB). That fits Linux's 8 MB default stack but not Windows' 1 MB. What
+  we did: kept the recursive form the manual specifies and documented the
+  limit. A closed form, `(lo + hi) * (hi - lo + 1) / 2`, would avoid it.
 
 ### Quirks
 
-- 
+- **`gcd_asm` is recursive but not reentrant.** It writes the global
+  `gcd_depth`, which bench requires. Two overlapping `gcd_asm` calls would
+  overwrite each other's depth. The gcd *result* would still be correct,
+  because the level is passed on the stack. This is the manual's
+  "recursion is not reentrancy" point in practice.
+- **`gcd_depth` counts calls, including the final `b == 0` call.**
+  `gcd(1071, 462)` reports 4: (1071,462) → (462,147) → (147,21) → (21,0).
+  `gcd(42, 0)` reports 1 and `gcd(0, 42)` reports 2.
+- **`bsearch_asm` returns *an* index of the key, not necessarily the
+  first.** On `duplicates.txt` and `identical.txt` any matching index
+  is correct, and bench accepts it.
+- **`bsearch_recursive` halves with unsigned `div`.** That is safe only
+  because the base case `lo > hi` runs first, so `hi - lo >= 0`. `shr eax, 1`
+  would be equivalent and cheaper.
+- **Added test:** `tests/tiny_ordered.txt` is the already-ordered pair the
+  manual leaves to the group. `make check` therefore reports 38 checks
+  instead of 36.
