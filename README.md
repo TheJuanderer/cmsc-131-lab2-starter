@@ -282,8 +282,36 @@ did about it.
 
 ### Known issues
 
-- 
+- **Quadratic time and linear recursion depth on sorted input.** `qsort_asm`
+  takes about 65x as long as C on `sorted1000.txt`. Cause: Lomuto with the last
+  element as pivot always picks the extreme value on sorted or reversed input
+  (see Measurements). Each level also costs a 24-byte frame, so a sorted
+  array of a few hundred thousand elements could overflow a 1 MB Windows
+  stack. What we did: documented it and measured it. Median-of-three is the
+  planned fix. The manual does not require it.
+- **`sum_range_asm` recursion depth is `hi - lo + 1`.** Each level uses a
+  16-byte frame. `bench` only asks for 1..1000 and 1..100. A range that still
+  fits in 32 bits, such as -46340..46340, needs about 93,000 frames (about
+  1.5 MB). That fits Linux's 8 MB default stack but not Windows' 1 MB. What
+  we did: kept the recursive form the manual specifies and documented the
+  limit. A closed form, `(lo + hi) * (hi - lo + 1) / 2`, would avoid it.
 
 ### Quirks
 
-- 
+- **`gcd_asm` is recursive but not reentrant.** It writes the global
+  `gcd_depth`, which bench requires. Two overlapping `gcd_asm` calls would
+  overwrite each other's depth. The gcd *result* would still be correct,
+  because the level is passed on the stack. This is the manual's
+  "recursion is not reentrancy" point in practice.
+- **`gcd_depth` counts calls, including the final `b == 0` call.**
+  `gcd(1071, 462)` reports 4: (1071,462) → (462,147) → (147,21) → (21,0).
+  `gcd(42, 0)` reports 1 and `gcd(0, 42)` reports 2.
+- **`bsearch_asm` returns *an* index of the key, not necessarily the
+  first.** On `duplicates.txt` and `identical.txt` any matching index
+  is correct, and bench accepts it.
+- **`bsearch_recursive` halves with unsigned `div`.** That is safe only
+  because the base case `lo > hi` runs first, so `hi - lo >= 0`. `shr eax, 1`
+  would be equivalent and cheaper.
+- **Added test:** `tests/tiny_ordered.txt` is the already-ordered pair the
+  manual leaves to the group. `make check` therefore reports 38 checks
+  instead of 36.
