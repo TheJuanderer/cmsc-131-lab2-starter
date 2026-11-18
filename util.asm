@@ -85,15 +85,22 @@ _gcd_asm:
         ; returns, so a counter that returns to zero on exit prints 0.
         ;
 
-        mov     eax, [ebp + 12]
-        push    eax
+        ; Reset the diagnostic global so it reflects only this call.
+        mov     dword [_gcd_depth], 0
 
-        mov     eax, [ebp+8]
-        push    eax
-
+        ; gcd_recursive(a, b, level) - internal convention, documented here:
+        ;       [ebp+16] = level   current depth, the first call is 1
+        ;       [ebp+12] = b
+        ;       [ebp+8]  = a
+        ; Caller pushes right to left and removes the 12 bytes afterwards,
+        ; result in eax. It touches only eax/ecx/edx, so it needs no saves.
+        ; The level travels on the stack, so each frame owns its own copy.
+        push    dword 1                 ; level = 1
+        push    dword [ebp + 12]        ; b
+        push    dword [ebp + 8]         ; a
         call    .gcd_asm_recursive
-        add     esp, 8
-        
+        add     esp, 12                 ; 3 arguments x 4 bytes
+
         leave
         ret
 
@@ -101,6 +108,14 @@ _gcd_asm:
 .gcd_asm_recursive:
         push    ebp
         mov     ebp, esp
+
+        ; Record the peak: if level > gcd_depth, gcd_depth = level.
+        ; Only the maximum is stored, so the value survives the unwind.
+        mov     eax, [ebp+16]
+        cmp     eax, [_gcd_depth]
+        jle     .depth_ok
+        mov     [_gcd_depth], eax
+.depth_ok:
 
         mov     eax, [ebp+12]
         cmp     eax, 0
@@ -112,16 +127,21 @@ _gcd_asm:
         mov     ecx, [ebp+12]
         idiv    ecx
 
+        ; push level + 1
+        mov     eax, [ebp+16]
+        inc     eax
+        push    eax
+
         ; get the a % b and push it
         mov     eax, edx
         push    eax
-        
+
         ; get the b and push it
         mov     eax, [ebp+12]
         push    eax
 
         call    .gcd_asm_recursive
-        add     esp, 8
+        add     esp, 12                 ; 3 arguments x 4 bytes
 
         jmp    .done
 
