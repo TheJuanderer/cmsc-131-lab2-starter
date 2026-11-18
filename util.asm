@@ -165,19 +165,72 @@ _gcd_asm:
 
 
         global  _sum_range_asm
+;
+; sum_range_asm(lo, hi) - C-facing, cdecl.
+;       [ebp+12] = hi
+;       [ebp+8]  = lo
+;
+; Reentrancy: this routine and its helper read and write nothing outside
+; their own stack frames and eax/ecx/edx. There is no .data or .bss
+; variable here. lo and hi are re-read from this frame's argument slots
+; after bench_callback returns, so a nested sum_range_asm started inside
+; the callback (which builds its own frames lower on the stack) cannot
+; change them. A non-reentrant version would keep a running total in a
+; global, e.g. `acc resd 1`: the nested call would reset acc to 0 and add
+; 1..100 into it, and the outer call would then finish with the wrong sum.
+;
+; No callee-saved register is used, so none needs saving. bench_callback
+; may destroy eax/ecx/edx, which is fine because nothing is held in them
+; across the call.
+;
 _sum_range_asm:
         enter   0,0
-        pusha
 
-        ;
-        ; TODO: sum_range. Call bench_callback once, then recurse on
-        ; (lo + 1, hi) and add lo. The base case lo > hi is 0. Put the
-        ; recursion in a second routine that does not call bench_callback.
-        ; Keep every intermediate on the stack. A global counter or
-        ; accumulator here is what breaks reentrancy.
-        ;
+        ; Exactly once per call from C. The recursion below does not call it.
+        call    _bench_callback
 
-        popa
-        mov     eax, 0
-        leave
+        push    dword [ebp + 12]        ; hi
+        push    dword [ebp + 8]         ; lo
+        call    sum_range_recursive
+        add     esp, 8                  ; 2 arguments x 4 bytes
+
+        leave                           ; result already in eax
+        ret
+
+
+;
+; sum_range_recursive(lo, hi) - internal, same layout as cdecl:
+;       [ebp+12] = hi
+;       [ebp+8]  = lo
+; Returns lo + (lo+1) + ... + hi in eax, or 0 when lo > hi. Caller removes
+; the arguments. Uses only eax, so it preserves every other register.
+;
+;   sum_range(lo, hi):
+;       if lo > hi: return 0
+;       return lo + sum_range(lo + 1, hi)
+;
+sum_range_recursive:
+        push    ebp
+        mov     ebp, esp
+
+        mov     eax, [ebp + 8]          ; lo
+        cmp     eax, [ebp + 12]         ; signed compare: lo may be negative
+        jg      .empty                  ; lo > hi -> 0
+
+        ; sum_range(lo + 1, hi). lo + 1 cannot overflow here: lo <= hi
+        ; means lo < INT_MAX.
+        push    dword [ebp + 12]        ; hi
+        inc     eax
+        push    eax                     ; lo + 1
+        call    sum_range_recursive
+        add     esp, 8                  ; 2 arguments x 4 bytes
+
+        add     eax, [ebp + 8]          ; + lo, from this frame's own slot
+        jmp     .done
+
+.empty:
+        xor     eax, eax
+.done:
+        mov     esp, ebp
+        pop     ebp
         ret
